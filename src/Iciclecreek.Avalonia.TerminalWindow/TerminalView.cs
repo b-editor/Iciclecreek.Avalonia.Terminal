@@ -151,6 +151,11 @@ namespace Iciclecreek.Terminal
                 nameof(StartingDirectory),
                 defaultValue: Environment.CurrentDirectory);
 
+        public static readonly StyledProperty<IReadOnlyDictionary<string, string>?> EnvironmentOverridesProperty =
+            AvaloniaProperty.Register<TerminalView, IReadOnlyDictionary<string, string>?>(
+                nameof(EnvironmentOverrides),
+                defaultValue: null);
+
         public static readonly StyledProperty<Color> CursorColorProperty =
             AvaloniaProperty.Register<TerminalView, Color>(
                 nameof(CursorColor),
@@ -540,6 +545,14 @@ namespace Iciclecreek.Terminal
         public void Kill() => _ptyConnection!.Kill();
 
         /// <summary>
+        /// Fully tears down the PTY process: kills it, disposes the connection and the read
+        /// cancellation source. Safe to call when no process is running and idempotent with the
+        /// cleanup that a subsequent detach would run. Call this when the owner is disposed and a
+        /// later detach is not guaranteed (e.g. closing an already-detached, inactive tab).
+        /// </summary>
+        public void Shutdown() => CleanupProcess();
+
+        /// <summary>
         /// Pastes text from the clipboard into the terminal.
         /// </summary>
         public async Task PasteAsync()
@@ -607,18 +620,24 @@ namespace Iciclecreek.Terminal
         public int Pid => _ptyConnection!.Pid;
 
         /// <summary>
-        /// Gets a value indicating whether a PTY connection currently exists. This is false when a
-        /// launch attempt failed to spawn a process, since <see cref="LaunchProcess()"/> swallows the
-        /// spawn exception; callers can inspect it right after a launch to detect that failure.
+        /// Gets a value indicating whether a PTY connection object currently exists. This is false
+        /// when a launch attempt failed to spawn a process, since <see cref="LaunchProcess()"/>
+        /// swallows the spawn exception; callers can inspect it right after a launch to detect that
+        /// failure. Note it stays true after a normal exit until the connection is cleaned up, so it
+        /// is not a process-liveness check.
         /// </summary>
-        public bool HasProcess => _ptyConnection != null;
+        public bool HasPtyConnection => _ptyConnection != null;
 
         /// <summary>
         /// Gets or sets environment variables applied to the launched PTY process, layered on top of
         /// the current process environment. Null (the default) inherits the process environment as-is.
         /// Passing the locale here avoids mutating the shared process environment.
         /// </summary>
-        public IReadOnlyDictionary<string, string>? EnvironmentOverrides { get; set; }
+        public IReadOnlyDictionary<string, string>? EnvironmentOverrides
+        {
+            get => GetValue(EnvironmentOverridesProperty);
+            set => SetValue(EnvironmentOverridesProperty, value);
+        }
 
         /// <summary>
         /// Gets or sets the font family used to render terminal text.
@@ -1892,7 +1911,10 @@ namespace Iciclecreek.Terminal
                 {
                     // Seed with the full process environment so the overrides layer on top of it
                     // regardless of whether the provider replaces or merges options.Environment.
-                    var environment = new Dictionary<string, string>();
+                    // Windows environment variables are case-insensitive, so an override must
+                    // replace an existing variable regardless of the casing the caller used.
+                    var environment = new Dictionary<string, string>(
+                        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
                     foreach (System.Collections.DictionaryEntry entry in System.Environment.GetEnvironmentVariables())
                     {
                         environment[(string)entry.Key] = entry.Value?.ToString() ?? string.Empty;
@@ -1951,7 +1973,10 @@ namespace Iciclecreek.Terminal
                     if (bytesRead == 0)
                     {
                         // Process has exited — fallback in case OnPtyProcessExited didn't fire first.
-                        if (Interlocked.Exchange(ref _processExitHandled, 1) == 0)
+                        // Skip when this reader's generation was cancelled (a superseded restart): a
+                        // stale reader must not flip _processExitHandled or write into the new session.
+                        if (!cancellationToken.IsCancellationRequested
+                            && Interlocked.Exchange(ref _processExitHandled, 1) == 0)
                         {
                             var exitCode = _ptyConnection?.ExitCode ?? 0;
 
@@ -2025,8 +2050,9 @@ namespace Iciclecreek.Terminal
             }
             catch (Exception ex)
             {
-                // If the process has already exited the stream closing is expected — swallow silently.
-                if (_processExitHandled != 0)
+                // A cancelled (superseded/restarted) generation's disposed stream can surface as a
+                // non-OperationCanceledException; it is not a read error for the live session.
+                if (cancellationToken.IsCancellationRequested || _processExitHandled != 0)
                     return;
 
                 lock (_terminalLock)

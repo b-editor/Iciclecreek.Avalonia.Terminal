@@ -16,7 +16,6 @@ namespace Iciclecreek.Terminal
     {
         private TerminalView? _terminalView;
         private ScrollBar? _scrollBar;
-        private IReadOnlyDictionary<string, string>? _environmentOverrides;
         private string? _currentDirectory;
 
 
@@ -58,6 +57,11 @@ namespace Iciclecreek.Terminal
         public static readonly StyledProperty<XTerm.Options.TerminalOptions?> OptionsProperty =
             AvaloniaProperty.Register<TerminalControl, XTerm.Options.TerminalOptions?>(
                 nameof(Options),
+                defaultValue: null);
+
+        public static readonly StyledProperty<IReadOnlyDictionary<string, string>?> EnvironmentOverridesProperty =
+            AvaloniaProperty.Register<TerminalControl, IReadOnlyDictionary<string, string>?>(
+                nameof(EnvironmentOverrides),
                 defaultValue: null);
 
         public event EventHandler<ProcessExitedEventArgs>? ProcessExited;
@@ -206,30 +210,31 @@ namespace Iciclecreek.Terminal
         public int Pid => _terminalView!.Pid;
 
         /// <summary>
-        /// Gets a value indicating whether a PTY connection currently exists. False after a launch
-        /// that failed to spawn a process, letting callers detect the failure that
-        /// <see cref="LaunchProcess()"/> otherwise swallows.
+        /// Gets a value indicating whether a PTY connection object currently exists. False after a
+        /// launch that failed to spawn a process, letting callers detect the failure that
+        /// <see cref="LaunchProcess()"/> otherwise swallows. Stays true after a normal exit until the
+        /// connection is cleaned up, so it is not a process-liveness check.
         /// </summary>
-        public bool HasProcess => _terminalView?.HasProcess ?? false;
+        public bool HasPtyConnection => _terminalView?.HasPtyConnection ?? false;
 
         /// <summary>
         /// Gets or sets environment variables applied to the launched PTY process, layered on top of
         /// the current process environment. Null (the default) inherits the process environment as-is.
-        /// Passing the locale here avoids mutating the shared process environment.
+        /// Passing the locale here avoids mutating the shared process environment. Flowed to the inner
+        /// view by the template binding in Generic.axaml, so it survives a template re-apply for free.
         /// </summary>
         public IReadOnlyDictionary<string, string>? EnvironmentOverrides
         {
-            get => _environmentOverrides;
-            set
-            {
-                // Retained so it survives a template being (re)applied, e.g. on visual re-parenting.
-                _environmentOverrides = value;
-                if (_terminalView != null)
-                {
-                    _terminalView.EnvironmentOverrides = value;
-                }
-            }
+            get => GetValue(EnvironmentOverridesProperty);
+            set => SetValue(EnvironmentOverridesProperty, value);
         }
+
+        /// <summary>
+        /// Fully tears down the PTY process (kill + dispose connection and read cancellation source).
+        /// Call when the owner is disposed and a later detach — which is what otherwise triggers
+        /// cleanup — is not guaranteed, e.g. closing an already-detached, inactive tab.
+        /// </summary>
+        public void Shutdown() => _terminalView?.Shutdown();
 
         /// <summary>
         /// Launch the terminal process with the current Process, Args, and StartingDirectory properties. If the process is already running, it will be
@@ -322,7 +327,6 @@ namespace Iciclecreek.Terminal
             {
                 _scrollBar.Scroll += OnScrollBarScroll;
                 _terminalView.Options = Options ?? new XTerm.Options.TerminalOptions();
-                _terminalView.EnvironmentOverrides = _environmentOverrides;
                 _terminalView.PropertyChanged += OnTerminalViewPropertyChanged;
                 _terminalView.ProcessExited += OnTerminalViewProcessExited;
                 SetCurrentDirectory(_terminalView.CurrentDirectory);
