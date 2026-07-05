@@ -1962,6 +1962,13 @@ namespace Iciclecreek.Terminal
                             }
 
                             this.RequestInvalidate();
+
+                            // Raise ProcessExited on this EOF path too; subscribers rely on it and
+                            // OnPtyProcessExited never fired (this branch won the exit-handled race).
+                            await Dispatcher.UIThread.InvokeAsync(() =>
+                            {
+                                ProcessExited?.Invoke(this, new ProcessExitedEventArgs(exitCode));
+                            });
                         }
                         break;
                     }
