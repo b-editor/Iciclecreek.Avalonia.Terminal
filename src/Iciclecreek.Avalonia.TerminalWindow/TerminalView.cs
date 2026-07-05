@@ -39,6 +39,7 @@ namespace Iciclecreek.Terminal
         private IPtyConnection? _ptyConnection;
         private CancellationTokenSource? _processCts;
         private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        private Decoder? _utf8Decoder;
         private int _processExitHandled;    // 0=false, 1=true — written via Interlocked
         private readonly object _terminalLock = new object(); // Serialises all _terminal.Write/WriteLine calls
 
@@ -1888,6 +1889,7 @@ namespace Iciclecreek.Terminal
             {
                 _processCts = new CancellationTokenSource();
                 Interlocked.Exchange(ref _processExitHandled, 0);  // Reset flag for new process
+                _utf8Decoder = Encoding.UTF8.GetDecoder();
 
                 // Determine the process to launch based on OS if not explicitly set
                 string processToLaunch = Process;
@@ -1952,6 +1954,7 @@ namespace Iciclecreek.Terminal
             try
             {
                 var buffer = new byte[0x40000];
+                var charBuffer = new char[0x40001];
                 while (!cancellationToken.IsCancellationRequested && _ptyConnection != null)
                 {
                     var bytesRead = await _ptyConnection.ReaderStream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
@@ -1978,7 +1981,13 @@ namespace Iciclecreek.Terminal
                         break;
                     }
 
-                    var output = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    // A stateful decoder carries multi-byte sequences split across
+                    // read boundaries into the next chunk instead of emitting U+FFFD.
+                    var decoder = _utf8Decoder ??= Encoding.UTF8.GetDecoder();
+                    var charCount = decoder.GetChars(buffer, 0, bytesRead, charBuffer, 0);
+                    if (charCount == 0)
+                        continue;
+                    var output = new string(charBuffer, 0, charCount);
 
                     // Snapshot before write so we can detect buffer growth (MaxScrollback
                     // increases when _terminal.Write adds lines; ScrollToBottom only moves
