@@ -857,7 +857,6 @@ namespace Iciclecreek.Terminal
         {
             base.OnDetachedFromLogicalTree(e);
 
-            _terminal.DataReceived -= OnTerminalDataReceived;
             _terminal.BufferChanged -= OnTerminalBufferChanged;
             _terminal.CursorStyleChanged -= OnTerminalCursorStyleChanged;
             _terminal.TitleChanged -= OnTerminalTitleChanged;
@@ -873,8 +872,14 @@ namespace Iciclecreek.Terminal
             _terminal.DirectoryChanged -= OnTerminalDirectoryChanged;
             _terminal.WindowInfoRequested -= OnTerminalWindowInfoRequested;
 
+            // OnTerminalDataReceived writes the emulator's reply (DSR/DA/kitty queries) back to
+            // the PTY and never touches the visual tree, so it must stay subscribed while the PTY
+            // keeps running detached — otherwise a hidden TUI's query reply is silently dropped.
             if (!_suppressCleanupOnDetach)
+            {
+                _terminal.DataReceived -= OnTerminalDataReceived;
                 CleanupProcess();
+            }
         }
 
         protected override void OnAttachedToLogicalTree(LogicalTreeAttachmentEventArgs e)
