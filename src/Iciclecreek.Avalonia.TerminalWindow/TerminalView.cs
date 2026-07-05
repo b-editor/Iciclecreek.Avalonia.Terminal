@@ -1092,16 +1092,22 @@ namespace Iciclecreek.Terminal
                     return;
                 }
 
-                // Try to get a printable character - first from KeySymbol, then from key mapping
-                // This is critical for Consolonia where KeySymbol may be empty
-                if (TryGetPrintableChar(e, out var printableChar))
+                // Plain printable input: on desktop Avalonia the composed text (shift,
+                // keyboard layout, dead keys, IME) arrives via OnTextInput, so the key
+                // event must stay unhandled here -- consuming it suppresses TextInput and
+                // e.KeySymbol does not reflect Shift on every platform (macOS types "a"
+                // for Shift+A). Fall back to a key-to-char mapping only when the platform
+                // provides no KeySymbol at all (e.g. Consolonia, which raises no
+                // TextInput events).
+                if (string.IsNullOrEmpty(e.KeySymbol) &&
+                    TryMapKeyToChar(e.Key, e.KeyModifiers, out var printableChar))
                 {
                     e.Handled = true;
                     await SendToPtyAsync(printableChar.ToString()).ConfigureAwait(false);
                     return;
                 }
 
-                // If we couldn't handle it, let TextInput try (for desktop Avalonia)
+                // Otherwise let TextInput deliver the composed text (desktop Avalonia)
             }
             catch (Exception ex)
             {
