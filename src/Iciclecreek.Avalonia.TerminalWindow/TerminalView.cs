@@ -607,6 +607,13 @@ namespace Iciclecreek.Terminal
         public int Pid => _ptyConnection!.Pid;
 
         /// <summary>
+        /// Gets a value indicating whether a PTY connection currently exists. This is false when a
+        /// launch attempt failed to spawn a process, since <see cref="LaunchProcess()"/> swallows the
+        /// spawn exception; callers can inspect it right after a launch to detect that failure.
+        /// </summary>
+        public bool HasProcess => _ptyConnection != null;
+
+        /// <summary>
         /// Gets or sets the font family used to render terminal text.
         /// </summary>
         public FontFamily FontFamily

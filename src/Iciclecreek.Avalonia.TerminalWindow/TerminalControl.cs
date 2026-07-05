@@ -205,6 +205,13 @@ namespace Iciclecreek.Terminal
         public int Pid => _terminalView!.Pid;
 
         /// <summary>
+        /// Gets a value indicating whether a PTY connection currently exists. False after a launch
+        /// that failed to spawn a process, letting callers detect the failure that
+        /// <see cref="LaunchProcess()"/> otherwise swallows.
+        /// </summary>
+        public bool HasProcess => _terminalView?.HasProcess ?? false;
+
+        /// <summary>
         /// Launch the terminal process with the current Process, Args, and StartingDirectory properties. If the process is already running, it will be
         /// terminated and replaced with a new instance using the updated properties. 
         /// </summary>
