@@ -614,6 +614,13 @@ namespace Iciclecreek.Terminal
         public bool HasProcess => _ptyConnection != null;
 
         /// <summary>
+        /// Gets or sets environment variables applied to the launched PTY process, layered on top of
+        /// the current process environment. Null (the default) inherits the process environment as-is.
+        /// Passing the locale here avoids mutating the shared process environment.
+        /// </summary>
+        public IReadOnlyDictionary<string, string>? EnvironmentOverrides { get; set; }
+
+        /// <summary>
         /// Gets or sets the font family used to render terminal text.
         /// </summary>
         public FontFamily FontFamily
@@ -1879,6 +1886,24 @@ namespace Iciclecreek.Terminal
                 if (Args != null && Args.Count > 0)
                 {
                     options.CommandLine = Args.ToArray();
+                }
+
+                if (EnvironmentOverrides is { Count: > 0 })
+                {
+                    // Seed with the full process environment so the overrides layer on top of it
+                    // regardless of whether the provider replaces or merges options.Environment.
+                    var environment = new Dictionary<string, string>();
+                    foreach (System.Collections.DictionaryEntry entry in System.Environment.GetEnvironmentVariables())
+                    {
+                        environment[(string)entry.Key] = entry.Value?.ToString() ?? string.Empty;
+                    }
+
+                    foreach (var pair in EnvironmentOverrides)
+                    {
+                        environment[pair.Key] = pair.Value;
+                    }
+
+                    options.Environment = environment;
                 }
 
                 _ptyConnection = await PtyProvider.SpawnAsync(options, _processCts.Token);

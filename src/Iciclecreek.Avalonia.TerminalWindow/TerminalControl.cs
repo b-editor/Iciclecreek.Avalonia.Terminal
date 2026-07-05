@@ -16,6 +16,7 @@ namespace Iciclecreek.Terminal
     {
         private TerminalView? _terminalView;
         private ScrollBar? _scrollBar;
+        private IReadOnlyDictionary<string, string>? _environmentOverrides;
         private string? _currentDirectory;
 
 
@@ -212,6 +213,25 @@ namespace Iciclecreek.Terminal
         public bool HasProcess => _terminalView?.HasProcess ?? false;
 
         /// <summary>
+        /// Gets or sets environment variables applied to the launched PTY process, layered on top of
+        /// the current process environment. Null (the default) inherits the process environment as-is.
+        /// Passing the locale here avoids mutating the shared process environment.
+        /// </summary>
+        public IReadOnlyDictionary<string, string>? EnvironmentOverrides
+        {
+            get => _environmentOverrides;
+            set
+            {
+                // Retained so it survives a template being (re)applied, e.g. on visual re-parenting.
+                _environmentOverrides = value;
+                if (_terminalView != null)
+                {
+                    _terminalView.EnvironmentOverrides = value;
+                }
+            }
+        }
+
+        /// <summary>
         /// Launch the terminal process with the current Process, Args, and StartingDirectory properties. If the process is already running, it will be
         /// terminated and replaced with a new instance using the updated properties. 
         /// </summary>
@@ -302,6 +322,7 @@ namespace Iciclecreek.Terminal
             {
                 _scrollBar.Scroll += OnScrollBarScroll;
                 _terminalView.Options = Options ?? new XTerm.Options.TerminalOptions();
+                _terminalView.EnvironmentOverrides = _environmentOverrides;
                 _terminalView.PropertyChanged += OnTerminalViewPropertyChanged;
                 _terminalView.ProcessExited += OnTerminalViewProcessExited;
                 SetCurrentDirectory(_terminalView.CurrentDirectory);
