@@ -1735,6 +1735,9 @@ namespace Iciclecreek.Terminal
                 result |= XT.Input.KeyModifiers.Control;
             if (modifiers.HasFlag(KeyModifiers.Alt))
                 result |= XT.Input.KeyModifiers.Alt;
+            // Meta (Cmd on macOS, Win on Windows) maps to the kitty protocol's Super modifier.
+            if (modifiers.HasFlag(KeyModifiers.Meta))
+                result |= XT.Input.KeyModifiers.Super;
 
             return result;
         }
