@@ -2378,8 +2378,9 @@ namespace Iciclecreek.Terminal
             // Don't cache double-width lines (transform makes caching complex)
             line.Cache = null;
 
-            // Calculate the clip rect for this row
-            var clipRect = new Rect(0, startYPos, _terminal.Cols * _charWidth, rowHeight);
+            // Calculate the clip rect for this row. Width is snapped like RenderNormalLine's so the
+            // snapped run edges are not clipped at fractional RenderScaling.
+            var clipRect = new Rect(0, startYPos, Snap(_terminal.Cols * _charWidth, scale), rowHeight);
 
             // For double-height lines, we need to clip to show only top or bottom half
             double scaleX = 2.0;
