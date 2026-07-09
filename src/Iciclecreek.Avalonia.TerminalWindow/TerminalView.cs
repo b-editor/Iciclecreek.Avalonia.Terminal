@@ -2588,7 +2588,12 @@ namespace Iciclecreek.Terminal
                                 typeface,
                                 FontSize,
                                 invertedBrush);
-                            using (context.PushClip(new Rect(posX, posY, cellWidth, cellHeight)))
+                            // A wide (CJK) cell spans cell.Width columns; clip to the full span so the
+                            // inverted glyph is not truncated to one column under the block cursor.
+                            double glyphClipWidth = cell.Width >= 2
+                                ? Snap((cursorX + cell.Width) * _charWidth, scale) - posX
+                                : cellWidth;
+                            using (context.PushClip(new Rect(posX, posY, glyphClipWidth, cellHeight)))
                                 context.DrawText(formattedText, new Point(posX, BaselineAlignedY(posY, formattedText)));
                         }
                     }
