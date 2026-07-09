@@ -31,6 +31,7 @@ namespace Iciclecreek.Terminal
         private string? _currentDirectory;
         private double _charWidth;
         private double _charHeight;
+        private double _charBaseline;
         private int _bufferSize = 1000;
         private bool _isAlternateBuffer;
 
@@ -2134,6 +2135,17 @@ namespace Iciclecreek.Terminal
 
             _charWidth = _measureText.Width;
             _charHeight = _measureText.Height;
+            _charBaseline = _measureText.Baseline;
+        }
+
+        /// <summary>
+        /// DrawText anchors at the text's top edge, so runs whose font has a different ascent than the
+        /// primary font (e.g. a CJK fallback for full-width glyphs Consolas/Menlo lack) would sit on a
+        /// different baseline. Shifting by the baseline delta keeps every run on the row's baseline.
+        /// </summary>
+        private double BaselineAlignedY(double startYPos, FormattedText text)
+        {
+            return startYPos + (_charBaseline - text.Baseline);
         }
 
         protected override Size MeasureOverride(Size availableSize)
@@ -2237,7 +2249,7 @@ namespace Iciclecreek.Terminal
                     var startX = Snap(run.StartX * _charWidth, scale);
                     var endX = Snap((run.StartX + run.CellCount) * _charWidth, scale);
                     var rect = new Rect(startX, startYPos, Math.Max(0, endX - startX), rowHeight);
-                    var position = new Point(startX, startYPos);
+                    var position = new Point(startX, BaselineAlignedY(startYPos, run.Text));
 
                     context.FillRectangle(run.Background, rect);
                     context.DrawText(run.Text, position);
@@ -2313,7 +2325,7 @@ namespace Iciclecreek.Terminal
                 if (td != null)
                     formattedText.SetTextDecorations(td);
 
-                var position = new Point(startX, startYPos);
+                var position = new Point(startX, BaselineAlignedY(startYPos, formattedText));
                 // Cache only content-dependent data, not screen position
                 textRuns.Add(new CachedTextRun(formattedText, runStartX, cellCount, background));
 
@@ -2424,7 +2436,7 @@ namespace Iciclecreek.Terminal
                         if (td != null)
                             formattedText.SetTextDecorations(td);
 
-                        var position = new Point(startX, startYPos);
+                        var position = new Point(startX, BaselineAlignedY(startYPos, formattedText));
 
                         context.FillRectangle(background, rect);
                         context.DrawText(formattedText, position);
@@ -2543,7 +2555,7 @@ namespace Iciclecreek.Terminal
                                 typeface,
                                 FontSize,
                                 invertedBrush);
-                            context.DrawText(formattedText, new Point(posX, posY));
+                            context.DrawText(formattedText, new Point(posX, BaselineAlignedY(posY, formattedText)));
                         }
                     }
                     else
@@ -2619,7 +2631,7 @@ namespace Iciclecreek.Terminal
             context.FillRectangle(background, new Rect(posX, posY, textWidth, cellHeight));
 
             // Draw the preedit text
-            context.DrawText(formattedText, new Point(posX, posY));
+            context.DrawText(formattedText, new Point(posX, BaselineAlignedY(posY, formattedText)));
 
             // Draw underline to indicate uncommitted composition text
             double underlineY = posY + cellHeight - Math.Max(1.0, scale);
