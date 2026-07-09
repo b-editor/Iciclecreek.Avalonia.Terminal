@@ -2263,8 +2263,9 @@ namespace Iciclecreek.Terminal
         private void RenderNormalLine(DrawingContext context, BufferLine line, int screenY, double startYPos, double rowHeight, double scale)
         {
             // Clip to the row so a baseline-shifted glyph from a taller fallback font (CJK) cannot
-            // overdraw the adjacent row; RenderDoubleWidthLine clips the same way.
-            var rowClip = new Rect(0, startYPos, _terminal.Cols * _charWidth, rowHeight);
+            // overdraw the adjacent row; RenderDoubleWidthLine clips the same way. Width is snapped
+            // like the run startX/endX so the last column's snapped edge is never clipped.
+            var rowClip = new Rect(0, startYPos, Snap(_terminal.Cols * _charWidth, scale), rowHeight);
 
             // Try to use cached text runs for this line (but not when ReverseVideo mode is active as it affects all cells)
             var textRuns = !_terminal.ReverseVideo ? line.Cache as List<CachedTextRun> : null;
