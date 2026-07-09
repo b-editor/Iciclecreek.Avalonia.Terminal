@@ -818,6 +818,29 @@ namespace Iciclecreek.Terminal
                 _terminal.Options.CursorBlinkRate = rate;
                 _cursorBlinkTimer.Interval = TimeSpan.FromMilliseconds(rate > 0 ? rate : 530);
             }
+            else if (change.Property == FontFamilyProperty ||
+                     change.Property == FontSizeProperty ||
+                     change.Property == FontStyleProperty ||
+                     change.Property == FontWeightProperty)
+            {
+                // Cached runs hold FormattedText built with the old typeface/size, and
+                // BaselineAlignedY combines the cached run baseline with the current primary
+                // baseline; both go stale on a font change, so drop every line cache.
+                InvalidateLineCaches();
+            }
+        }
+
+        private void InvalidateLineCaches()
+        {
+            if (_terminal == null)
+                return;
+
+            for (int y = 0; y < _terminal.Buffer.Length; y++)
+            {
+                var line = _terminal.Buffer.GetLine(y);
+                if (line != null)
+                    line.Cache = null;
+            }
         }
 
         private async void OnLoaded(object? sender, RoutedEventArgs e)
@@ -2239,20 +2262,27 @@ namespace Iciclecreek.Terminal
         /// </summary>
         private void RenderNormalLine(DrawingContext context, BufferLine line, int screenY, double startYPos, double rowHeight, double scale)
         {
+            // Clip to the row so a baseline-shifted glyph from a taller fallback font (CJK) cannot
+            // overdraw the adjacent row; RenderDoubleWidthLine clips the same way.
+            var rowClip = new Rect(0, startYPos, _terminal.Cols * _charWidth, rowHeight);
+
             // Try to use cached text runs for this line (but not when ReverseVideo mode is active as it affects all cells)
             var textRuns = !_terminal.ReverseVideo ? line.Cache as List<CachedTextRun> : null;
             if (textRuns != null)
             {
-                foreach (var run in textRuns)
+                using (context.PushClip(rowClip))
                 {
-                    // Recalculate position based on current screen row
-                    var startX = Snap(run.StartX * _charWidth, scale);
-                    var endX = Snap((run.StartX + run.CellCount) * _charWidth, scale);
-                    var rect = new Rect(startX, startYPos, Math.Max(0, endX - startX), rowHeight);
-                    var position = new Point(startX, BaselineAlignedY(startYPos, run.Text));
+                    foreach (var run in textRuns)
+                    {
+                        // Recalculate position based on current screen row
+                        var startX = Snap(run.StartX * _charWidth, scale);
+                        var endX = Snap((run.StartX + run.CellCount) * _charWidth, scale);
+                        var rect = new Rect(startX, startYPos, Math.Max(0, endX - startX), rowHeight);
+                        var position = new Point(startX, BaselineAlignedY(startYPos, run.Text));
 
-                    context.FillRectangle(run.Background, rect);
-                    context.DrawText(run.Text, position);
+                        context.FillRectangle(run.Background, rect);
+                        context.DrawText(run.Text, position);
+                    }
                 }
                 return;
             }
@@ -2260,6 +2290,7 @@ namespace Iciclecreek.Terminal
             // Build and cache text runs for this line
             textRuns = new List<CachedTextRun>();
 
+            using (context.PushClip(rowClip))
             for (int x = 0; x < _terminal.Cols;)
             {
                 if (x >= line.Length)
@@ -2555,7 +2586,8 @@ namespace Iciclecreek.Terminal
                                 typeface,
                                 FontSize,
                                 invertedBrush);
-                            context.DrawText(formattedText, new Point(posX, BaselineAlignedY(posY, formattedText)));
+                            using (context.PushClip(new Rect(posX, posY, cellWidth, cellHeight)))
+                                context.DrawText(formattedText, new Point(posX, BaselineAlignedY(posY, formattedText)));
                         }
                     }
                     else
@@ -2630,8 +2662,10 @@ namespace Iciclecreek.Terminal
             // Draw background behind preedit text to cover existing content
             context.FillRectangle(background, new Rect(posX, posY, textWidth, cellHeight));
 
-            // Draw the preedit text
-            context.DrawText(formattedText, new Point(posX, BaselineAlignedY(posY, formattedText)));
+            // Draw the preedit text, clipped to its background box so a baseline-shifted CJK
+            // composition glyph cannot escape the overlay into the surrounding rows.
+            using (context.PushClip(new Rect(posX, posY, textWidth, cellHeight)))
+                context.DrawText(formattedText, new Point(posX, BaselineAlignedY(posY, formattedText)));
 
             // Draw underline to indicate uncommitted composition text
             double underlineY = posY + cellHeight - Math.Max(1.0, scale);
