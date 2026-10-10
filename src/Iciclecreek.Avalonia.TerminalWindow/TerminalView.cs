@@ -64,7 +64,11 @@ namespace Iciclecreek.Terminal
         // survives a visual-tree re-parent (e.g. floating window pop-out/dock-back).
         private bool _suppressCleanupOnDetach;
 
-        private sealed record CachedTextRun(FormattedText Text, int StartX, int CellCount, IBrush Background);
+        // A centered run is a single cell whose glyph keeps its own width; it is centered on its cells.
+        private sealed record CachedTextRun(FormattedText Text, int StartX, int CellCount, IBrush Background, bool IsCentered);
+
+        // Whether the primary font advances exactly one cell for a code point in a given weight/style.
+        private readonly Dictionary<(int CodePoint, FontWeight Weight, FontStyle Style), bool> _oneCellGlyphs = new();
 
         public static readonly DirectProperty<TerminalView, bool> IsAlternateBufferProperty =
             AvaloniaProperty.RegisterDirect<TerminalView, bool>(
@@ -831,6 +835,8 @@ namespace Iciclecreek.Terminal
 
         private void InvalidateLineCaches()
         {
+            _oneCellGlyphs.Clear();
+
             if (_terminal == null)
                 return;
 
@@ -2268,105 +2274,17 @@ namespace Iciclecreek.Terminal
 
             // Try to use cached text runs for this line (but not when ReverseVideo mode is active as it affects all cells)
             var textRuns = !_terminal.ReverseVideo ? line.Cache as List<CachedTextRun> : null;
-            if (textRuns != null)
+            if (textRuns == null)
             {
-                using (context.PushClip(rowClip))
-                {
-                    foreach (var run in textRuns)
-                    {
-                        // Recalculate position based on current screen row
-                        var startX = Snap(run.StartX * _charWidth, scale);
-                        var endX = Snap((run.StartX + run.CellCount) * _charWidth, scale);
-                        var rect = new Rect(startX, startYPos, Math.Max(0, endX - startX), rowHeight);
-                        var position = new Point(startX, BaselineAlignedY(startYPos, run.Text));
+                textRuns = BuildTextRuns(line, _terminal.Cols);
 
-                        context.FillRectangle(run.Background, rect);
-                        context.DrawText(run.Text, position);
-                    }
-                }
-                return;
+                // Cache the text runs (but not when ReverseVideo mode is active)
+                if (!_terminal.ReverseVideo)
+                    line.Cache = textRuns;
             }
-
-            // Build and cache text runs for this line
-            textRuns = new List<CachedTextRun>();
 
             using (context.PushClip(rowClip))
-            for (int x = 0; x < _terminal.Cols;)
-            {
-                if (x >= line.Length)
-                    break;
-                var cell = line[x];
-                string text = String.Empty;
-                int cellCount = 0;
-                int runStartX = 0;
-
-                // Skip placeholder cells (width 0) that follow wide characters
-                if (cell.Width == 0)
-                {
-                    Debug.Assert(cell.Content == BufferCell.Empty.Content, "Placeholder cell should be null content");
-                    x++;
-                    continue;
-                }
-                else if (cell.Width == 1)
-                {
-                    // Collect consecutive cells with same attributes
-                    var textBuilder = new StringBuilder();
-                    cellCount = 0;  // Total cell positions consumed (including wide char placeholders)
-                    runStartX = x;
-                    while (x < line.Length && x < _terminal.Cols)
-                    {
-                        var currentCell = line[x];
-
-                        // Stop if we hit a different attribute or a placeholder cell mid-run
-                        if (currentCell.Width != 1 || currentCell.Attributes != cell.Attributes)
-                            break;
-                        textBuilder.Append(currentCell.Content);
-                        cellCount += currentCell.Width;
-
-                        // Skip the placeholder cell that follows a wide character
-                        x += currentCell.Width;
-                    }
-                    text = textBuilder.ToString();
-                }
-                else if (cell.Width == 2)
-                {
-                    text = cell.Content;
-                    cellCount = cell.Width;
-                    runStartX = x;
-                    x += cell.Width;  // Move past wide character and its placeholder
-                }
-
-                var startX = Snap(runStartX * _charWidth, scale);
-                var endX = Snap((runStartX + cellCount) * _charWidth, scale);
-                var rect = new Rect(startX, startYPos, Math.Max(0, endX - startX), rowHeight);
-                var background = cell.GetBackgroundBrush(this.Background);
-                var foreground = cell.GetForegroundBrush(this.Foreground);
-                // Apply cell-level inverse attribute
-                if (cell.Attributes.IsInverse())
-                    (foreground, background) = (background, foreground);
-                // Apply terminal-wide reverse video mode (DECSCNM)
-                if (_terminal.ReverseVideo)
-                    (foreground, background) = (background, foreground);
-                if (cell.Attributes.IsBlink() && this._cursorBlinkOn)
-                    (foreground, background) = (background, foreground);
-
-                var typeface = new Typeface(FontFamily, cell.GetFontStyle(), cell.GetFontWeight());
-                var formattedText = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, typeface, FontSize, foreground);
-                var td = cell.GetTextDecorations();
-                if (td != null)
-                    formattedText.SetTextDecorations(td);
-
-                var position = new Point(startX, BaselineAlignedY(startYPos, formattedText));
-                // Cache only content-dependent data, not screen position
-                textRuns.Add(new CachedTextRun(formattedText, runStartX, cellCount, background));
-
-                context.FillRectangle(background, rect);
-                context.DrawText(formattedText, position);
-            }
-
-            // Cache the text runs (but not when ReverseVideo mode is active)
-            if (!_terminal.ReverseVideo)
-                line.Cache = textRuns;
+                DrawTextRuns(context, textRuns, startYPos, rowHeight, scale);
         }
 
         /// <summary>
@@ -2408,73 +2326,130 @@ namespace Iciclecreek.Terminal
                 {
                     // Render the line content at normal size - the transform will scale it
                     // Only render the first half of the columns since they'll be doubled
-                    int effectiveCols = _terminal.Cols / 2;
-
-                    for (int x = 0; x < effectiveCols && x < line.Length;)
-                    {
-                        var cell = line[x];
-                        string text = String.Empty;
-                        int cellCount = 0;
-                        int runStartX = 0;
-
-                        // Skip placeholder cells (width 0) that follow wide characters
-                        if (cell.Width == 0)
-                        {
-                            x++;
-                            continue;
-                        }
-                        else if (cell.Width == 1)
-                        {
-                            // Collect consecutive cells with same attributes
-                            var textBuilder = new StringBuilder();
-                            cellCount = 0;
-                            runStartX = x;
-                            while (x < line.Length && x < effectiveCols)
-                            {
-                                var currentCell = line[x];
-                                if (currentCell.Width != 1 || currentCell.Attributes != cell.Attributes)
-                                    break;
-                                textBuilder.Append(currentCell.Content);
-                                cellCount += currentCell.Width;
-                                x += currentCell.Width;
-                            }
-                            text = textBuilder.ToString();
-                        }
-                        else if (cell.Width == 2)
-                        {
-                            text = cell.Content;
-                            cellCount = cell.Width;
-                            runStartX = x;
-                            x += cell.Width;
-                        }
-
-                        var startX = Snap(runStartX * _charWidth, scale);
-                        var endX = Snap((runStartX + cellCount) * _charWidth, scale);
-                        var rect = new Rect(startX, startYPos, Math.Max(0, endX - startX), rowHeight);
-                        var background = cell.GetBackgroundBrush(this.Background);
-                        var foreground = cell.GetForegroundBrush(this.Foreground);
-                        // Apply cell-level inverse attribute
-                        if (cell.Attributes.IsInverse())
-                            (foreground, background) = (background, foreground);
-                        // Apply terminal-wide reverse video mode (DECSCNM)
-                        if (_terminal.ReverseVideo)
-                            (foreground, background) = (background, foreground);
-                        if (cell.Attributes.IsBlink() && this._cursorBlinkOn)
-                            (foreground, background) = (background, foreground);
-
-                        var typeface = new Typeface(FontFamily, cell.GetFontStyle(), cell.GetFontWeight());
-                        var formattedText = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, typeface, FontSize, foreground);
-                        var td = cell.GetTextDecorations();
-                        if (td != null)
-                            formattedText.SetTextDecorations(td);
-
-                        var position = new Point(startX, BaselineAlignedY(startYPos, formattedText));
-
-                        context.FillRectangle(background, rect);
-                        context.DrawText(formattedText, position);
-                    }
+                    DrawTextRuns(context, BuildTextRuns(line, _terminal.Cols / 2), startYPos, rowHeight, scale);
                 }
             }
+        }
+
+        /// <summary>
+        /// Splits the first <paramref name="cols"/> cells of a line into runs that share attributes.
+        /// A run is drawn as one text, so it only collects cells the primary font advances exactly one
+        /// cell for. Wide cells and glyphs that come from a fallback font (CJK, symbols such as the ones
+        /// TUIs draw) keep their own width, so each becomes a run of its own, centered on its cells,
+        /// instead of pushing every following glyph off the grid.
+        /// </summary>
+        private List<CachedTextRun> BuildTextRuns(BufferLine line, int cols)
+        {
+            var textRuns = new List<CachedTextRun>();
+
+            for (int x = 0; x < cols && x < line.Length;)
+            {
+                var cell = line[x];
+
+                // Skip placeholder cells (width 0) that follow wide characters
+                if (cell.Width == 0)
+                {
+                    Debug.Assert(cell.Content == BufferCell.Empty.Content, "Placeholder cell should be null content");
+                    x++;
+                    continue;
+                }
+
+                string text;
+                int runStartX = x;
+                bool isCentered = cell.Width != 1 || !AdvancesOneCell(cell);
+                if (isCentered)
+                {
+                    text = cell.Content;
+                    x += cell.Width;  // Move past the cell and, for a wide character, its placeholder
+                }
+                else
+                {
+                    // Collect consecutive one-cell glyphs with same attributes
+                    var textBuilder = new StringBuilder();
+                    while (x < line.Length && x < cols)
+                    {
+                        var currentCell = line[x];
+                        if (currentCell.Width != 1 || currentCell.Attributes != cell.Attributes || !AdvancesOneCell(currentCell))
+                            break;
+                        textBuilder.Append(currentCell.Content);
+                        x++;
+                    }
+                    text = textBuilder.ToString();
+                }
+
+                var background = cell.GetBackgroundBrush(this.Background);
+                var foreground = cell.GetForegroundBrush(this.Foreground);
+                // Apply cell-level inverse attribute
+                if (cell.Attributes.IsInverse())
+                    (foreground, background) = (background, foreground);
+                // Apply terminal-wide reverse video mode (DECSCNM)
+                if (_terminal.ReverseVideo)
+                    (foreground, background) = (background, foreground);
+                if (cell.Attributes.IsBlink() && this._cursorBlinkOn)
+                    (foreground, background) = (background, foreground);
+
+                var typeface = new Typeface(FontFamily, cell.GetFontStyle(), cell.GetFontWeight());
+                var formattedText = new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, typeface, FontSize, foreground);
+                var td = cell.GetTextDecorations();
+                if (td != null)
+                    formattedText.SetTextDecorations(td);
+
+                // Cache only content-dependent data, not screen position
+                textRuns.Add(new CachedTextRun(formattedText, runStartX, x - runStartX, background, isCentered));
+            }
+
+            return textRuns;
+        }
+
+        private void DrawTextRuns(DrawingContext context, List<CachedTextRun> textRuns, double startYPos, double rowHeight, double scale)
+        {
+            // Fill every background before any glyph, so a centered glyph wider than its cell is not
+            // painted over by the background of the run after it.
+            foreach (var run in textRuns)
+            {
+                var startX = Snap(run.StartX * _charWidth, scale);
+                var endX = Snap((run.StartX + run.CellCount) * _charWidth, scale);
+                context.FillRectangle(run.Background, new Rect(startX, startYPos, Math.Max(0, endX - startX), rowHeight));
+            }
+
+            foreach (var run in textRuns)
+            {
+                var startX = Snap(run.StartX * _charWidth, scale);
+                var endX = Snap((run.StartX + run.CellCount) * _charWidth, scale);
+                var x = run.IsCentered ? CenteredX(run.Text, startX, endX - startX) : startX;
+                context.DrawText(run.Text, new Point(x, BaselineAlignedY(startYPos, run.Text)));
+            }
+        }
+
+        private static double CenteredX(FormattedText text, double startX, double width)
+        {
+            return startX + (width - text.WidthIncludingTrailingWhitespace) / 2;
+        }
+
+        /// <summary>
+        /// Whether the primary font draws the cell's glyph itself, advancing exactly one cell. False for
+        /// glyphs the font lacks (they come from a fallback font with its own width) and for cells that
+        /// carry combining marks.
+        /// </summary>
+        private bool AdvancesOneCell(BufferCell cell)
+        {
+            if (cell.Content.Length != (cell.CodePoint > 0xFFFF ? 2 : 1))
+                return false;
+
+            var weight = cell.GetFontWeight();
+            var style = cell.GetFontStyle();
+            var key = (cell.CodePoint, weight, style);
+            if (!_oneCellGlyphs.TryGetValue(key, out bool advancesOneCell))
+            {
+                advancesOneCell =
+                    FontManager.Current.TryGetGlyphTypeface(new Typeface(FontFamily, style, weight), out var glyphTypeface)
+                    && glyphTypeface.CharacterToGlyphMap.TryGetGlyph(cell.CodePoint, out ushort glyph)
+                    && glyphTypeface.TryGetHorizontalGlyphAdvance(glyph, out ushort advance)
+                    && Math.Abs(advance * FontSize / glyphTypeface.Metrics.DesignEmHeight - _charWidth) < 0.01;
+                _oneCellGlyphs[key] = advancesOneCell;
+            }
+
+            return advancesOneCell;
         }
 
         /// <summary>
@@ -2592,8 +2567,12 @@ namespace Iciclecreek.Terminal
                             double glyphClipWidth = cell.Width >= 2
                                 ? Snap((cursorX + cell.Width) * _charWidth, scale) - posX
                                 : cellWidth;
+                            // Place the glyph where the line draws it: wide and fallback glyphs are centered.
+                            double glyphX = cell.Width >= 2 || (cell.Width == 1 && !AdvancesOneCell(cell))
+                                ? CenteredX(formattedText, posX, glyphClipWidth)
+                                : posX;
                             using (context.PushClip(new Rect(posX, posY, glyphClipWidth, cellHeight)))
-                                context.DrawText(formattedText, new Point(posX, BaselineAlignedY(posY, formattedText)));
+                                context.DrawText(formattedText, new Point(glyphX, BaselineAlignedY(posY, formattedText)));
                         }
                     }
                     else
